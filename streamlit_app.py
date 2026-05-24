@@ -3,20 +3,20 @@ import librosa
 import numpy as np
 import pandas as pd
 
-st.set_page_config(page_title="محلل جودة المكالمات الصوتي", page_icon="🎧", layout="centered")
+st.set_page_config(page_title="AI Audio Quality Auditor", page_icon="🎧", layout="centered")
 
-st.title("🎧 نظام الفحص الآلي فائق الدقة للضوضاء")
-st.subheader("تصفية وفلترة المكالمات هندسياً بدون الحاجة لـ APIs مدفوعة")
-st.write("ارفعي ملف المكالمة المسجلة، والسيستم هيفلتر صوت الأيجنت تماماً ويطلعلك توقيتات الدوشة والخبط فوراً!")
+st.title("🎧 Automated Audio Noise Auditor")
+st.subheader("High-precision, standalone call filtration system")
+st.write("Upload the call recording. The system will filter out the agent's voice and pinpoint background noise and spikes instantly.")
 
 st.markdown("---")
 
-uploaded_file = st.file_uploader("👇 اختاري أو اسحبي ملف المكالمة هنا (MP3 / WAV)", type=["mp3", "wav"])
+uploaded_file = st.file_uploader("👇 Choose or drop a call file here (MP3 / WAV)", type=["mp3", "wav"])
 
 if uploaded_file is not None:
     st.audio(uploaded_file, format='audio/wav')
-    if st.button("🔍 بدء الفحص الصوتي الفوري", type="primary"):
-        with st.spinner("⏳ جاري تحليل بصمة الصوت بثلاثة فلاتر هندسية لضمان أعلى دقة..."):
+    if st.button("🔍 Start Audio Audit", type="primary"):
+        with st.spinner("⏳ Analyzing audio footprint using multi-filter engineering..."):
             try:
                 y, sr = librosa.load(uploaded_file, sr=16000)
                 hop_length = 16000
@@ -47,22 +47,22 @@ if uploaded_file is not None:
                     if energy > energy_threshold and spectral_val > centroid_threshold and rolloff_val > rolloff_threshold:
                         severity = "High 🚨" if energy > (energy_threshold * 1.8) else "Medium ⚠️"
                         violations.append({
-                            "التوقيت ⏱️": timestamp,
-                            "حالة الصوت المكتشف": "ضوضاء خلفية مؤكدة (خبط / شوشرة محيطة)",
-                            "مستوى الإزعاج 📊": severity
+                            "Timestamp ⏱️": timestamp,
+                            "Audio Status": "Confirmed Background Noise / Distortion",
+                            "Severity Level 📊": severity
                         })
                 
-                st.markdown("### 💡 ملخص الفحص والنتيجة")
+                st.markdown("### 💡 Audit Summary & Results")
                 if len(violations) > 0:
                     df = pd.DataFrame(violations)
-                    df = df.drop_duplicates(subset=['التوقيت ⏱️'])
-                    st.error(f"🚨 تم رصد {len(df)} ثانية تحتوي على دوشة حقيقية في الخلفية (تم تجنب صوت الأيجنت العالي بنجاح).")
-                    st.markdown("### 📊 جدول توقيتات المخالفات المكتشفة")
+                    df = df.drop_duplicates(subset=['Timestamp ⏱️'])
+                    st.error(f"🚨 Detected {len(df)} seconds of background noise (Agent's voice skipped successfully).")
+                    st.markdown("### 📊 Violation Log Table")
                     st.dataframe(df, use_container_width=True)
                 else:
-                    st.success("✅ الفحص فائق الدقة: المكالمة مطابقة للمواصفات، صوت الأيجنت طبيعي ولا توجد دوشة خلفية.")
+                    st.success("✅ Audit Passed: Call complies with quality standards. Agent voice is clear, no background noise detected.")
             except Exception as e:
-                st.error(f"❌ حدث خطأ أثناء تحليل الملف: {str(e)}")
+                st.error(f"❌ Error during analysis: {str(e)}")
 
 st.markdown("---")
-st.caption("تطوير أداة الأوديت الذكية - مجانية بالكامل وبدون حدود للاستخدام.")
+st.caption("Smart Audit Tool - Free and Unlimited Use.")
