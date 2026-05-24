@@ -3,39 +3,32 @@ import librosa
 import numpy as np
 import pandas as pd
 
-# Page Configuration
+# 1. Page Configuration
 st.set_page_config(page_title="AI Audio Quality Auditor", page_icon="🎧", layout="centered")
 
-# Custom Styling (CSS) for beautiful background and glowing UI
+# 2. Custom Styling (CSS)
 st.markdown("""
     <style>
-    /* Main Background Gradient */
     .stApp {
         background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
         color: #f8fafc !important;
     }
-    
-    /* Titles & Headings color */
     h1, h3, p, span, label {
         color: #f1f5f9 !important;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
-    
-    /* Subheader customized text styling */
     .subheader-text {
         color: #38bdf8 !important;
         font-weight: 500;
+        font-size: 1.2rem;
+        margin-bottom: 1rem;
     }
-
-    /* File Uploader styling */
     section[data-testid="stFileUploader"] {
-        background-color: rgba(30, 41, 59, 0.7);
+        background-color: rgba(30, 41, 59, 0.7) !important;
         border: 2px dashed #6366f1 !important;
         border-radius: 12px;
         padding: 20px;
     }
-
-    /* Primary Button Customization (Neon Glow) */
     div.stButton > button:first-child {
         background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%) !important;
         color: white !important;
@@ -46,13 +39,10 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(168, 85, 247, 0.4);
         transition: all 0.3s ease;
     }
-    
     div.stButton > button:first-child:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(168, 85, 247, 0.6);
     }
-    
-    /* Dataframe table styling adjustment */
     div[data-testid="stDataFrame"] {
         background-color: rgba(15, 23, 42, 0.8) !important;
         border-radius: 10px;
@@ -61,7 +51,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# App Content
+# 3. App Interface Content
 st.title("🎧 Automated Audio Noise Auditor")
 st.markdown("<p class='subheader-text'>High-precision, standalone call filtration system</p>", unsafe_allow_html=True)
 st.write("Upload the call recording. The system will filter out the agent's voice and pinpoint background noise and spikes instantly.")
@@ -100,7 +90,8 @@ if uploaded_file is not None:
                     minutes = current_second // 60
                     seconds = current_second % 60
                     timestamp = f"{minutes:02d}:{seconds:02d}"
-                  if energy > energy_threshold and spectral_val > centroid_threshold and rolloff_val > rolloff_threshold:
+                    
+                    if energy > energy_threshold and spectral_val > centroid_threshold and rolloff_val > rolloff_threshold:
                         severity = "High 🚨" if energy > (energy_threshold * 1.8) else "Medium ⚠️"
                         violations.append({
                             "Timestamp ⏱️": timestamp,
