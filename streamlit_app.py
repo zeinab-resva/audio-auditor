@@ -105,44 +105,41 @@ uploaded_file = st.file_uploader("👇 Choose or drop a call file here (MP3 / WA
 if uploaded_file is not None:
     st.audio(uploaded_file, format='audio/wav')
     if st.button("🔍 Start Audio Audit", type="primary"):
-        with st.spinner("⏳ Runing ultra-sensitive acoustic audit filters..."):
+        with st.spinner("⏳ Running ultra-sensitive acoustic audit filters..."):
             try:
+                # Load audio
                 y, sr = librosa.load(uploaded_file, sr=16000)
                 hop_length = 16000
                 
-                # Extracting Audio Features
+                # Extract Audio Features per second
                 rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
                 centroid = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=16000, hop_length=hop_length)[0]
-                rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr, n_fft=16000, hop_length=hop_length, roll_percent=0.85)[0]
-                
-                mean_energy = np.mean(rms)
-                mean_centroid = np.mean(centroid)
-                mean_rolloff = np.mean(rolloff)
-                
-                # NEW ULTRA-SENSITIVE THRESHOLDS (More strict on background noises)
-                energy_threshold = mean_energy * 1.15
-                centroid_threshold = mean_centroid * 1.10
-                rolloff_threshold = mean_rolloff * 1.10
                 
                 violations = []
+                
+                # Dynamic Threshold Calculation with a more aggressive approach
+                mean_energy = np.mean(rms)
+                mean_centroid = np.mean(centroid)
+                
+                # Sensitive baseline criteria
+                ENERGY_LIMIT = mean_energy * 1.1
+                CENTROID_LIMIT = mean_centroid * 1.05
                 
                 for i in range(len(rms)):
                     energy = rms[i]
                     spectral_val = centroid[i]
-                    rolloff_val = rolloff[i]
                     
                     current_second = i
                     minutes = current_second // 60
                     seconds = current_second % 60
                     timestamp = f"{minutes:02d}:{seconds:02d}"
                     
-                    # Detection Logic
-                    if energy > energy_threshold and (spectral_val > centroid_threshold or rolloff_val > rolloff_threshold):
-                        severity = "High 🚨" if energy > (energy_threshold * 1.5) else "Medium ⚠️"
+                    # ENHANCED LOGIC: Detects high static/distortion OR sudden background noise spikes
+                    if (energy > ENERGY_LIMIT and spectral_val > CENTROID_LIMIT) or (spectral_val > mean_centroid * 1.3):
                         violations.append({
                             "Timestamp ⏱️": timestamp,
-                            "Audio Status": "Detected Background Noise / Noise Spike",
-                            "Severity Level 📊": severity
+                            "Audio Status": "Detected Background Noise / Static Distortion",
+                            "Severity Level 📊": "High 🚨" if spectral_val > (mean_centroid * 1.4) else "Medium ⚠️"
                         })
                 
                 st.markdown("### 💡 Audit Summary & Results")
