@@ -13,7 +13,7 @@ st.markdown("""
         background: linear-gradient(-45deg, #0f172a, #1e1b4b, #3b0764, #0f172a);
         background-size: 400% 400%;
         animation: gradientBG 15s ease infinite;
- +       color: #f8fafc !important;
+        color: #f8fafc !important;
         overflow-x: hidden;
     }
     @keyframes gradientBG {
@@ -76,12 +76,6 @@ st.markdown("""
         transform: translateY(-3px);
         box-shadow: 0 8px 30px rgba(168, 85, 247, 0.8);
     }
-    div[data-testid="stDataFrame"] {
-        background-color: rgba(15, 23, 42, 0.85) !important;
-        border-radius: 12px;
-        border: 1px solid #475569;
-        padding: 10px;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -101,12 +95,9 @@ st.markdown("<p class='subheader-text'>High-precision, standalone call filtratio
 st.markdown("---")
 
 
-def classify_noise_type(
-    centroid: float, zcr: float, rolloff: float, flatness: float
-) -> str:
+def classify_noise_type(centroid: float, zcr: float, rolloff: float, flatness: float) -> str:
     """
     Classify detected background noise using spectral shape features.
-    Spectral flatness near 1.0 → white-noise / static; near 0 → tonal / structured.
     """
     if flatness > 0.25:
         return "📡 Electronic interference / line static"
@@ -139,13 +130,12 @@ if uploaded_file is not None:
                 rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
                 
                 violations = []
+                issue_timestamps = []
                 
                 # Calculate statistical baseline to ignore constant background hiss
                 mean_energy = np.mean(rms)
                 std_energy = np.std(rms)
                 
-                # Dynamic Threshold: Only catches sudden spikes or clear noise events that deviate from the baseline hiss
-                # We filter out very silent segments first to prevent false alarms in quiet calls
                 for i in range(len(rms)):
                     energy = rms[i]
                     
@@ -154,12 +144,13 @@ if uploaded_file is not None:
                     seconds = current_second % 60
                     timestamp = f"{minutes:02d}:{seconds:02d}"
                     
-                    # LOGIC: If the second has an energy spike significantly higher than the average call background
+                    # LOGIC: Catch explicit spikes while ignoring line hiss
                     if energy > (mean_energy + 1.2 * std_energy) and energy > 0.02:
-                        # Extract the specific 1-second segment of the raw audio waveform
+                        issue_timestamps.append(timestamp)
+                        
+                        # Extract the specific 1-second segment for classification
                         y_sec = y[i * sr : (i + 1) * sr]
                         if len(y_sec) > 0:
-                            # Compute spectral features on-the-fly for this second to classify the noise type
                             centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
                             zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
                             rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=y_sec, sr=sr)))
@@ -168,27 +159,23 @@ if uploaded_file is not None:
                         else:
                             noise_type = "📢 General background disturbance"
 
-                        violations.append({
-                            "Timestamp ⏱️": timestamp,
-                            "Audio Status": "Detected Explicit Background Noise / Speech Disturbance",
-                            "Detected Noise Type": noise_type,
-                            "Severity Level 📊": "High 🚨" if energy > (mean_energy + 2.5 * std_energy) else "Medium ⚠️"
-                        })
+                        violations.append(noise_type)
                 
                 st.markdown("### 💡 Audit Summary & Results")
                 if len(violations) > 0:
-                    # Extract unique noise types detected
-                    unique_noises = sorted(list(set([v["Detected Noise Type"] for v in violations])))
+                    # Remove duplicates from timestamps and noise types
+                    unique_timestamps = sorted(list(set(issue_timestamps)))
+                    unique_noises = sorted(list(set(violations)))
                     
-                    st.error("🚨 Call Quality Audit Failed: Environmental Noise Detected")
-                    st.markdown("#### Identified Environmental Issues:")
+                    # Clean look showing only the problem, the specific seconds, and the type
+                    timestamps_str = ", ".join(unique_timestamps)
+                    st.error(f"❌ **Problem Detected at ({timestamps_str}) -> Identified Issues:**")
                     for noise in unique_noises:
-                        st.markdown(f"- {noise}")
+                        st.markdown(f"- **{noise}**")
                 else:
-                    st.success("✅ Quality Audit Passed: Call environment complies with quiet-workspace standards.")
+                    st.success("✅ **Result:** Quality Audit Passed. Call environment complies with quiet-workspace standards.")
             except Exception as e:
                 st.error(f"❌ Error during analysis: {str(e)}")
 
 st.markdown("---")
 st.caption("Smart Audit Tool - Balanced Precision Edition.")
-
