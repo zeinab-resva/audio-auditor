@@ -105,54 +105,50 @@ uploaded_file = st.file_uploader("👇 Choose or drop a call file here (MP3 / WA
 if uploaded_file is not None:
     st.audio(uploaded_file, format='audio/wav')
     if st.button("🔍 Start Audio Audit", type="primary"):
-        with st.spinner("⏳ Running ultra-sensitive acoustic audit filters..."):
+        with st.spinner("⏳ Analyzing call for explicit background noise..."):
             try:
                 # Load audio
                 y, sr = librosa.load(uploaded_file, sr=16000)
                 hop_length = 16000
                 
-                # Extract Audio Features per second
+                # Extract RMS Energy per second
                 rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
-                centroid = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=16000, hop_length=hop_length)[0]
                 
                 violations = []
                 
-                # Dynamic Threshold Calculation with a more aggressive approach
+                # Calculate statistical baseline to ignore constant background hiss
                 mean_energy = np.mean(rms)
-                mean_centroid = np.mean(centroid)
+                std_energy = np.std(rms)
                 
-                # Sensitive baseline criteria
-                ENERGY_LIMIT = mean_energy * 1.1
-                CENTROID_LIMIT = mean_centroid * 1.05
-                
+                # Dynamic Threshold: Only catches sudden spikes or clear noise events that deviate from the baseline hiss
+                # We filter out very silent segments first to prevent false alarms in quiet calls
                 for i in range(len(rms)):
                     energy = rms[i]
-                    spectral_val = centroid[i]
                     
                     current_second = i
                     minutes = current_second // 60
                     seconds = current_second % 60
                     timestamp = f"{minutes:02d}:{seconds:02d}"
                     
-                    # ENHANCED LOGIC: Detects high static/distortion OR sudden background noise spikes
-                    if (energy > ENERGY_LIMIT and spectral_val > CENTROID_LIMIT) or (spectral_val > mean_centroid * 1.3):
+                    # LOGIC: If the second has an energy spike significantly higher than the average call background
+                    if energy > (mean_energy + 1.2 * std_energy) and energy > 0.02:
                         violations.append({
                             "Timestamp ⏱️": timestamp,
-                            "Audio Status": "Detected Background Noise / Static Distortion",
-                            "Severity Level 📊": "High 🚨" if spectral_val > (mean_centroid * 1.4) else "Medium ⚠️"
+                            "Audio Status": "Detected Explicit Background Noise / Speech Disturbance",
+                            "Severity Level 📊": "High 🚨" if energy > (mean_energy + 2.5 * std_energy) else "Medium ⚠️"
                         })
                 
                 st.markdown("### 💡 Audit Summary & Results")
                 if len(violations) > 0:
                     df = pd.DataFrame(violations)
                     df = df.drop_duplicates(subset=['Timestamp ⏱️'])
-                    st.error(f"🚨 Detected {len(df)} seconds containing background noise or distortions.")
+                    st.error(f"🚨 Detected {len(df)} seconds containing explicit background noise or spikes.")
                     st.markdown("### 📊 Violation Log Table")
                     st.dataframe(df, use_container_width=True)
                 else:
-                    st.success("✅ Audit Passed: Call complies with strict quality standards. No micro-noise detected.")
+                    st.success("✅ Audit Passed: Call complies with quality standards. Constant line hiss ignored successfully.")
             except Exception as e:
                 st.error(f"❌ Error during analysis: {str(e)}")
 
 st.markdown("---")
-st.caption("Smart Audit Tool - Ultra Sensitive Edition.")
+st.caption("Smart Audit Tool - Balanced Precision Edition.")
