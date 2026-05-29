@@ -126,7 +126,7 @@ if uploaded_files:
         progress_bar = st.progress(0)
         st.markdown("### 💡 Bulk Audit Summary & Results")
         
-        for index, file in enumerate(uploaded_files)}:
+        for index, file in enumerate(uploaded_files):
             progress_bar.progress((index + 1) / len(uploaded_files))
             
             with st.container():
