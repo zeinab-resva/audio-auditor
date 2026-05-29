@@ -126,7 +126,7 @@ if uploaded_files:
         progress_bar = st.progress(0)
         st.markdown("### 💡 Bulk Audit Summary & Results")
         
-        for index, file in enumerate(uploaded_files):
+        for index, file in enumerate(uploaded_files)}:
             progress_bar.progress((index + 1) / len(uploaded_files))
             
             with st.container():
@@ -156,8 +156,8 @@ if uploaded_files:
                         seconds = current_second % 60
                         timestamp = f"{minutes:02d}:{seconds:02d}"
                         
-                        # 1. Adjusted baseline check to ensure mild line static during agent silence isn't flagged
-                        if energy > (mean_energy + 1.8 * std_energy) and energy > 0.045:
+                        # 1. Check if there is an energy spike above the baseline line-static/hiss
+                        if energy > (mean_energy + 1.5 * std_energy) and energy > 0.03:
                             
                             # Extract the exact 1-second audio segment for deep-validation
                             y_sec = y[i * sr : (i + 1) * sr]
@@ -167,18 +167,16 @@ if uploaded_files:
                                 zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
                                 flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
                                 
-                                # 2. FILTER OUT HEAVY BREATHING / MICROPHONE PROXIMITY (Enhanced thresholds)
-                                if zcr > 0.14 or (zcr > 0.10 and flatness > 0.06):
+                                # 2. FILTER OUT HEAVY BREATHING / MICROPHONE PROXIMITY
+                                if zcr > 0.15 and flatness > 0.08:
                                     continue
                                     
-                                # 3. FILTER OUT AGENT'S LOUD/ENERGETIC VOICE AND HARMONIC SPEECH HISS
-                                # Pure environmental noise doesn't follow the precise harmonic structure of voice
-                                if 550 < centroid < 2400 and 0.02 < zcr < 0.13:
-                                    # If it has the speech footprint and isn't a massive explosion of sound, skip it
-                                    if flatness < 0.05 or energy < (mean_energy + 3.2 * std_energy):
+                                # 3. FILTER OUT AGENT'S LOUD/ENERGETIC VOICE (HUMAN SPEECH)
+                                if 600 < centroid < 2200 and 0.03 < zcr < 0.12:
+                                    if energy < (mean_energy + 3.0 * std_energy):
                                         continue 
                                 
-                                # 4. VERIFIED EXPLICIT ENVIRONMENTAL NOISE (Banging or Background Whistling/Chatter)
+                                # 4. VERIFIED EXPLICIT ENVIRONMENTAL NOISE
                                 noise_type = classify_noise_type(centroid, zcr, flatness)
                                 issue_timestamps.append(timestamp)
                                 violations.append(noise_type)
@@ -186,8 +184,7 @@ if uploaded_files:
                     # Display the audio player so user can review the clip
                     st.audio(file, format='audio/wav')
                     
-                    # NEW CRITERIA: Fail the call only if genuine environmental issues persist for 2 seconds or more
-                    if len(violations) >= 2:
+                    if len(violations) > 0:
                         unique_timestamps = sorted(list(set(issue_timestamps)))
                         unique_noises = sorted(list(set(violations)))
                         timestamps_str = ", ".join(unique_timestamps)
@@ -196,7 +193,7 @@ if uploaded_files:
                         for noise in unique_noises:
                             st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• **{noise}**")
                     else:
-                        st.success("✅ **Result:** Quality Audit Passed. (Any minor micro-noise under 2 seconds was safely bypassed).")
+                        st.success("✅ **Result:** Quality Audit Passed. Call environment complies with quiet-workspace standards.")
                         
                 except Exception as e:
                     st.error(f"❌ Error during analysis of this file: {str(e)}")
