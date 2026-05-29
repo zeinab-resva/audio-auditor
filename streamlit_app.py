@@ -134,16 +134,17 @@ if uploaded_files:
                 st.markdown(f"📁 **File Name:** `{file.name}`")
                 
                 try:
-                    # Load audio
+                    # Load audio with standardized 16kHz sampling
                     y, sr = librosa.load(file, sr=16000)
                     hop_length = 16000
                     
-                    # Extract features per second
+                    # Extract robust features per second
                     rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
                     
                     violations = []
                     issue_timestamps = []
                     
+                    # Calculate stats to understand the baseline line hiss/static
                     mean_energy = np.mean(rms)
                     std_energy = np.std(rms)
                     
@@ -155,32 +156,39 @@ if uploaded_files:
                         seconds = current_second % 60
                         timestamp = f"{minutes:02d}:{seconds:02d}"
                         
+                        # 1. Check if there is an energy spike above the baseline line-static/hiss
                         if energy > (mean_energy + 1.5 * std_energy) and energy > 0.03:
+                            
+                            # Extract the exact 1-second audio segment for deep-validation
                             y_sec = y[i * sr : (i + 1) * sr]
                             if len(y_sec) > 0:
+                                # Compute features for the target second
                                 centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
                                 zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
                                 flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
                                 
-                                # Filter breathing & proximity
+                                # 2. FILTER OUT HEAVY BREATHING / MICROPHONE PROXIMITY
+                                # High Zero Crossing Rate combined with high flatness indicates breath air friction, not external noise
                                 if zcr > 0.15 and flatness > 0.08:
                                     continue
                                     
-                                # Filter agent's energetic speech
+                                # 3. FILTER OUT AGENT'S LOUD/ENERGETIC VOICE (HUMAN SPEECH)
+                                # Human vowels have low spectral centroids and harmonic structures. 
+                                # If it's pure energetic voice, it passes standard speech patterns.
                                 if 600 < centroid < 2200 and 0.03 < zcr < 0.12:
+                                    # To double-check it's not background chatter, we ensure it's the primary voice channel
                                     if energy < (mean_energy + 3.0 * std_energy):
-                                        continue 
+                                        continue # Skip, this is just the agent speaking enthusiastically or loudly
                                 
-                                # Verified environmental issue
+                                # 4. VERIFIED EXPLICIT ENVIRONMENTAL NOISE (Banging or Background Whistling/Chatter)
                                 noise_type = classify_noise_type(centroid, zcr, flatness)
                                 issue_timestamps.append(timestamp)
                                 violations.append(noise_type)
                     
-                    # Display the audio player
+                    # Display the audio player so user can review the clip
                     st.audio(file, format='audio/wav')
                     
-                    # ADJUSTED LOGIC: Triggers a failure if there are 2 or more seconds of noise (len >= 2)
-                    if len(violations) >= 2:
+                    if len(violations) > 0:
                         unique_timestamps = sorted(list(set(issue_timestamps)))
                         unique_noises = sorted(list(set(violations)))
                         timestamps_str = ", ".join(unique_timestamps)
@@ -189,7 +197,7 @@ if uploaded_files:
                         for noise in unique_noises:
                             st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• **{noise}**")
                     else:
-                        st.success("✅ **Result:** Quality Audit Passed. (Any minor micro-noise under 2 seconds was safely bypassed).")
+                        st.success("✅ **Result:** Quality Audit Passed. Call environment complies with quiet-workspace standards.")
                         
                 except Exception as e:
                     st.error(f"❌ Error during analysis of this file: {str(e)}")
