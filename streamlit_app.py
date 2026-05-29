@@ -102,9 +102,6 @@ st.markdown("<p class='subheader-text'>High-precision, standalone bulk filtratio
 st.markdown("---")
 
 def classify_noise_type(centroid: float, zcr: float) -> str:
-    """
-    Refined Noise Classification targeting only explicit environmental issues.
-    """
     if centroid < 600:
         return "💥 Low-frequency Impact / Loud physical thud / Banging"
     elif centroid < 1600 and zcr < 0.07:
@@ -134,43 +131,43 @@ if uploaded_files:
                 st.markdown(f"📁 **File Name:** `{file.name}`")
                 
                 try:
-                    # Load audio with 16kHz
+                    # Load audio
                     y, sr = librosa.load(file, sr=16000)
                     hop_length = 16000
                     
+                    # Extract energy (RMS) and Flatness per second
                     rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
+                    flatness_arr = librosa.feature.spectral_flatness(y=y, n_fft=16000, hop_length=hop_length)[0]
                     
                     violations = []
                     issue_timestamps = []
                     
-                    # FIXED: Solid, high-precision strict threshold to fully immunize against line hiss and agent volume shifts
-                    STRICT_THRESHOLD = 0.12
-                    
-                    for i in range(len(rms)):
+                    for i in range(min(len(rms), len(flatness_arr))):
                         energy = rms[i]
+                        flatness = flatness_arr[i]
                         
                         current_second = i
                         minutes = current_second // 60
                         seconds = current_second % 60
                         timestamp = f"{minutes:02d}:{seconds:02d}"
                         
-                        # Trigger only if it breaks the strict safety threshold
-                        if energy > STRICT_THRESHOLD:
+                        # NEW FILTER LOGIC: Look at noise texture, not just raw volume
+                        # If the signal is very chaotic/noisy (flatness > 0.04) AND has basic minimum energy to not be pure silence
+                        if flatness > 0.04 and energy > 0.02:
                             y_sec = y[i * sr : (i + 1) * sr]
                             if len(y_sec) > 0:
                                 centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
                                 zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
-                                flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
                                 
-                                # Strict filter for breathing/sighs
-                                if zcr > 0.18 or (zcr > 0.12 and flatness > 0.05):
+                                # 1. Strict filter for breathing/sighs (high ZCR with standard flatness)
+                                if zcr > 0.18:
                                     continue
                                     
-                                # Strict filter for speech envelope
-                                if 650 < centroid < 2400 and 0.02 < zcr < 0.10:
+                                # 2. Strict filter for human speech (harmonic structure drops flatness)
+                                if 650 < centroid < 2400 and 0.02 < zcr < 0.10 and flatness < 0.06:
                                     continue 
                                 
-                                # Verified explicit issue
+                                # Verified explicit noise issue
                                 noise_type = classify_noise_type(centroid, zcr)
                                 issue_timestamps.append(timestamp)
                                 violations.append(noise_type)
