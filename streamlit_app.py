@@ -179,8 +179,8 @@ if uploaded_files:
                     # Display the audio player
                     st.audio(file, format='audio/wav')
                     
-                    # NEW LOGIC: Only trigger a failure if there are 3 or more seconds of noise
-                    if len(violations) >= 3:
+                    # ADJUSTED LOGIC: Triggers a failure if there are 2 or more seconds of noise (len >= 2)
+                    if len(violations) >= 2:
                         unique_timestamps = sorted(list(set(issue_timestamps)))
                         unique_noises = sorted(list(set(violations)))
                         timestamps_str = ", ".join(unique_timestamps)
@@ -189,8 +189,7 @@ if uploaded_files:
                         for noise in unique_noises:
                             st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• **{noise}**")
                     else:
-                        # If noise is only 1 or 2 seconds, it ignores it and passes the call successfully
-                        st.success("✅ **Result:** Quality Audit Passed. (Any minor micro-noise under 3 seconds was safely bypassed).")
+                        st.success("✅ **Result:** Quality Audit Passed. (Any minor micro-noise under 2 seconds was safely bypassed).")
                         
                 except Exception as e:
                     st.error(f"❌ Error during analysis of this file: {str(e)}")
