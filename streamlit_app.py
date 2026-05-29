@@ -143,15 +143,8 @@ if uploaded_files:
                     violations = []
                     issue_timestamps = []
                     
-                    # Compute dynamic background floor (ignores constant hardware line hiss)
-                    sorted_rms = np.sort(rms)
-                    background_floor = np.mean(sorted_rms[:int(len(sorted_rms)*0.3)]) 
-                    
-                    mean_energy = np.mean(rms)
-                    std_energy = np.std(rms)
-                    
-                    # FIXED: Raised absolute threshold to 0.055 to prevent silence baseline drops from causing false alarms
-                    dynamic_threshold = max(background_floor + 2.5 * std_energy, 0.055)
+                    # FIXED: Solid, high-precision strict threshold to fully immunize against line hiss and agent volume shifts
+                    STRICT_THRESHOLD = 0.12
                     
                     for i in range(len(rms)):
                         energy = rms[i]
@@ -161,24 +154,23 @@ if uploaded_files:
                         seconds = current_second % 60
                         timestamp = f"{minutes:02d}:{seconds:02d}"
                         
-                        # Trigger check if energy is significantly over the calibrated floor
-                        if energy > dynamic_threshold:
+                        # Trigger only if it breaks the strict safety threshold
+                        if energy > STRICT_THRESHOLD:
                             y_sec = y[i * sr : (i + 1) * sr]
                             if len(y_sec) > 0:
                                 centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
                                 zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
                                 flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
                                 
-                                # Robust filter for breathing
+                                # Strict filter for breathing/sighs
                                 if zcr > 0.18 or (zcr > 0.12 and flatness > 0.05):
                                     continue
                                     
-                                # Robust filter for agent's voice
+                                # Strict filter for speech envelope
                                 if 650 < centroid < 2400 and 0.02 < zcr < 0.10:
-                                    if energy < (mean_energy + 3.5 * std_energy):
-                                        continue 
+                                    continue 
                                 
-                                # Explicit environmental issues verified
+                                # Verified explicit issue
                                 noise_type = classify_noise_type(centroid, zcr)
                                 issue_timestamps.append(timestamp)
                                 violations.append(noise_type)
@@ -186,7 +178,7 @@ if uploaded_files:
                     # Display the audio player
                     st.audio(file, format='audio/wav')
                     
-                    # Triggered only if there are 2 or more seconds of genuine environmental issues
+                    # Requires 2 or more distinct seconds of violation to fail
                     if len(violations) >= 2:
                         unique_timestamps = sorted(list(set(issue_timestamps)))
                         unique_noises = sorted(list(set(violations)))
