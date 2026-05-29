@@ -101,26 +101,16 @@ st.markdown("<p class='subheader-text'>High-precision, standalone bulk filtratio
 
 st.markdown("---")
 
-
-def classify_noise_type(centroid: float, zcr: float, rolloff: float, flatness: float) -> str:
+def classify_noise_type(centroid: float, zcr: float, flatness: float) -> str:
     """
-    Classify detected background noise using spectral shape features.
+    Classify verified background noises, ignoring speech and breathing artifacts.
     """
-    if flatness > 0.25:
-        return "📡 Electronic interference / line static"
-    elif centroid < 400:
-        return "💥 Low-freq impact / door slam / physical thud"
-    elif centroid < 1200 and zcr < 0.09:
-        return "🗣️ Background chatter / overlapping speech"
-    elif centroid < 2500 and zcr > 0.12:
-        return "🎵 Background music"
-    elif centroid > 3500:
-        return "📡 High-freq hiss / electronic noise"
-    elif zcr > 0.20:
-        return "🏠 Ambient office / environment noise"
+    if centroid < 500:
+        return "💥 Low-frequency Impact / Loud physical thud / Banging"
+    elif centroid < 1400 and zcr < 0.08:
+        return "🗣️ Background chatter / Environmental overlapping speech"
     else:
-        return "📢 General background disturbance"
-
+        return "📢 Explicit background disturbance / Loud ambient noise"
 
 # Bulk upload configuration
 uploaded_files = st.file_uploader(
@@ -144,17 +134,17 @@ if uploaded_files:
                 st.markdown(f"📁 **File Name:** `{file.name}`")
                 
                 try:
-                    # Load audio
+                    # Load audio with standardized 16kHz sampling
                     y, sr = librosa.load(file, sr=16000)
                     hop_length = 16000
                     
-                    # Extract RMS Energy per second
+                    # Extract robust features per second
                     rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
                     
                     violations = []
                     issue_timestamps = []
                     
-                    # Calculate statistical baseline
+                    # Calculate stats to understand the baseline line hiss/static
                     mean_energy = np.mean(rms)
                     std_energy = np.std(rms)
                     
@@ -166,23 +156,36 @@ if uploaded_files:
                         seconds = current_second % 60
                         timestamp = f"{minutes:02d}:{seconds:02d}"
                         
-                        # Detection Logic
-                        if energy > (mean_energy + 1.2 * std_energy) and energy > 0.02:
-                            issue_timestamps.append(timestamp)
+                        # 1. Check if there is an energy spike above the baseline line-static/hiss
+                        if energy > (mean_energy + 1.5 * std_energy) and energy > 0.03:
                             
+                            # Extract the exact 1-second audio segment for deep-validation
                             y_sec = y[i * sr : (i + 1) * sr]
                             if len(y_sec) > 0:
+                                # Compute features for the target second
                                 centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
                                 zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
-                                rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=y_sec, sr=sr)))
                                 flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
-                                noise_type = classify_noise_type(centroid, zcr, rolloff, flatness)
-                            else:
-                                noise_type = "📢 General background disturbance"
-
-                            violations.append(noise_type)
+                                
+                                # 2. FILTER OUT HEAVY BREATHING / MICROPHONE PROXIMITY
+                                # High Zero Crossing Rate combined with high flatness indicates breath air friction, not external noise
+                                if zcr > 0.15 and flatness > 0.08:
+                                    continue
+                                    
+                                # 3. FILTER OUT AGENT'S LOUD/ENERGETIC VOICE (HUMAN SPEECH)
+                                # Human vowels have low spectral centroids and harmonic structures. 
+                                # If it's pure energetic voice, it passes standard speech patterns.
+                                if 600 < centroid < 2200 and 0.03 < zcr < 0.12:
+                                    # To double-check it's not background chatter, we ensure it's the primary voice channel
+                                    if energy < (mean_energy + 3.0 * std_energy):
+                                        continue # Skip, this is just the agent speaking enthusiastically or loudly
+                                
+                                # 4. VERIFIED EXPLICIT ENVIRONMENTAL NOISE (Banging or Background Whistling/Chatter)
+                                noise_type = classify_noise_type(centroid, zcr, flatness)
+                                issue_timestamps.append(timestamp)
+                                violations.append(noise_type)
                     
-                    # Display the audio player right above or below the status
+                    # Display the audio player so user can review the clip
                     st.audio(file, format='audio/wav')
                     
                     if len(violations) > 0:
