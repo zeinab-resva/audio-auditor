@@ -122,7 +122,7 @@ def classify_noise_type(centroid: float, zcr: float, rolloff: float, flatness: f
         return "📢 General background disturbance"
 
 
-# ENABLED MULTIPLE FILES UPLOAD (accept_multiple_files=True)
+# Bulk upload configuration
 uploaded_files = st.file_uploader(
     "👇 Choose or drop multiple call files here (MP3 / WAV)", 
     type=["mp3", "wav"], 
@@ -133,16 +133,12 @@ if uploaded_files:
     st.info(f"📂 Total calls loaded: {len(uploaded_files)} files.")
     
     if st.button("🔍 Start Bulk Audio Audit", type="primary"):
-        # Progress bar for visual monitoring
         progress_bar = st.progress(0)
-        
         st.markdown("### 💡 Bulk Audit Summary & Results")
         
         for index, file in enumerate(uploaded_files):
-            # Update progress bar status
             progress_bar.progress((index + 1) / len(uploaded_files))
             
-            # Create a nice container block for each call result
             with st.container():
                 st.markdown(f"<div class='call-box'>", unsafe_allow_html=True)
                 st.markdown(f"📁 **File Name:** `{file.name}`")
@@ -158,7 +154,7 @@ if uploaded_files:
                     violations = []
                     issue_timestamps = []
                     
-                    # Calculate statistical baseline to ignore constant background hiss
+                    # Calculate statistical baseline
                     mean_energy = np.mean(rms)
                     std_energy = np.std(rms)
                     
@@ -170,11 +166,10 @@ if uploaded_files:
                         seconds = current_second % 60
                         timestamp = f"{minutes:02d}:{seconds:02d}"
                         
-                        # LOGIC: Catch explicit spikes while ignoring line hiss
+                        # Detection Logic
                         if energy > (mean_energy + 1.2 * std_energy) and energy > 0.02:
                             issue_timestamps.append(timestamp)
                             
-                            # Extract segment for classification
                             y_sec = y[i * sr : (i + 1) * sr]
                             if len(y_sec) > 0:
                                 centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
@@ -186,6 +181,9 @@ if uploaded_files:
                                 noise_type = "📢 General background disturbance"
 
                             violations.append(noise_type)
+                    
+                    # Display the audio player right above or below the status
+                    st.audio(file, format='audio/wav')
                     
                     if len(violations) > 0:
                         unique_timestamps = sorted(list(set(issue_timestamps)))
@@ -203,7 +201,7 @@ if uploaded_files:
                 
                 st.markdown("</div>", unsafe_allow_html=True)
                 
-        st.balloons() # Dynamic celebration effect when all 100 calls are done!
+        st.balloons()
 
 st.markdown("---")
 st.caption("Smart Audit Tool - Bulk Precision Edition.")
