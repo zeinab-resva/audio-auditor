@@ -6,7 +6,7 @@ import pandas as pd
 # 1. Page Configuration
 st.set_page_config(page_title="AI Audio Quality Auditor", page_icon="🎧", layout="centered")
 
-# 2. Advanced Custom Styling (CSS for Background + Floating Particles Animation + Glowing UI)
+# 2. Advanced Custom Styling (CSS for Background + Glowing UI)
 st.markdown("""
     <style>
     .stApp {
@@ -76,6 +76,13 @@ st.markdown("""
         transform: translateY(-3px);
         box-shadow: 0 8px 30px rgba(168, 85, 247, 0.8);
     }
+    .call-box {
+        background-color: rgba(15, 23, 42, 0.6);
+        border: 1px solid #475569;
+        border-radius: 12px;
+        padding: 15px;
+        margin-bottom: 15px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -90,7 +97,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown("<h1 style='text-align: center;'>🎧 Automated Audio Noise Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subheader-text'>High-precision, standalone call filtration system</p>", unsafe_allow_html=True)
+st.markdown("<p class='subheader-text'>High-precision, standalone bulk filtration system</p>", unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -115,67 +122,88 @@ def classify_noise_type(centroid: float, zcr: float, rolloff: float, flatness: f
         return "📢 General background disturbance"
 
 
-uploaded_file = st.file_uploader("👇 Choose or drop a call file here (MP3 / WAV)", type=["mp3", "wav"])
+# ENABLED MULTIPLE FILES UPLOAD (accept_multiple_files=True)
+uploaded_files = st.file_uploader(
+    "👇 Choose or drop multiple call files here (MP3 / WAV)", 
+    type=["mp3", "wav"], 
+    accept_multiple_files=True
+)
 
-if uploaded_file is not None:
-    st.audio(uploaded_file, format='audio/wav')
-    if st.button("🔍 Start Audio Audit", type="primary"):
-        with st.spinner("⏳ Analyzing call for explicit background noise..."):
-            try:
-                # Load audio
-                y, sr = librosa.load(uploaded_file, sr=16000)
-                hop_length = 16000
+if uploaded_files:
+    st.info(f"📂 Total calls loaded: {len(uploaded_files)} files.")
+    
+    if st.button("🔍 Start Bulk Audio Audit", type="primary"):
+        # Progress bar for visual monitoring
+        progress_bar = st.progress(0)
+        
+        st.markdown("### 💡 Bulk Audit Summary & Results")
+        
+        for index, file in enumerate(uploaded_files):
+            # Update progress bar status
+            progress_bar.progress((index + 1) / len(uploaded_files))
+            
+            # Create a nice container block for each call result
+            with st.container():
+                st.markdown(f"<div class='call-box'>", unsafe_allow_html=True)
+                st.markdown(f"📁 **File Name:** `{file.name}`")
                 
-                # Extract RMS Energy per second
-                rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
-                
-                violations = []
-                issue_timestamps = []
-                
-                # Calculate statistical baseline to ignore constant background hiss
-                mean_energy = np.mean(rms)
-                std_energy = np.std(rms)
-                
-                for i in range(len(rms)):
-                    energy = rms[i]
+                try:
+                    # Load audio
+                    y, sr = librosa.load(file, sr=16000)
+                    hop_length = 16000
                     
-                    current_second = i
-                    minutes = current_second // 60
-                    seconds = current_second % 60
-                    timestamp = f"{minutes:02d}:{seconds:02d}"
+                    # Extract RMS Energy per second
+                    rms = librosa.feature.rms(y=y, frame_length=16000, hop_length=hop_length)[0]
                     
-                    # LOGIC: Catch explicit spikes while ignoring line hiss
-                    if energy > (mean_energy + 1.2 * std_energy) and energy > 0.02:
-                        issue_timestamps.append(timestamp)
+                    violations = []
+                    issue_timestamps = []
+                    
+                    # Calculate statistical baseline to ignore constant background hiss
+                    mean_energy = np.mean(rms)
+                    std_energy = np.std(rms)
+                    
+                    for i in range(len(rms)):
+                        energy = rms[i]
                         
-                        # Extract the specific 1-second segment for classification
-                        y_sec = y[i * sr : (i + 1) * sr]
-                        if len(y_sec) > 0:
-                            centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
-                            zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
-                            rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=y_sec, sr=sr)))
-                            flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
-                            noise_type = classify_noise_type(centroid, zcr, rolloff, flatness)
-                        else:
-                            noise_type = "📢 General background disturbance"
+                        current_second = i
+                        minutes = current_second // 60
+                        seconds = current_second % 60
+                        timestamp = f"{minutes:02d}:{seconds:02d}"
+                        
+                        # LOGIC: Catch explicit spikes while ignoring line hiss
+                        if energy > (mean_energy + 1.2 * std_energy) and energy > 0.02:
+                            issue_timestamps.append(timestamp)
+                            
+                            # Extract segment for classification
+                            y_sec = y[i * sr : (i + 1) * sr]
+                            if len(y_sec) > 0:
+                                centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
+                                zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
+                                rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=y_sec, sr=sr)))
+                                flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
+                                noise_type = classify_noise_type(centroid, zcr, rolloff, flatness)
+                            else:
+                                noise_type = "📢 General background disturbance"
 
-                        violations.append(noise_type)
-                
-                st.markdown("### 💡 Audit Summary & Results")
-                if len(violations) > 0:
-                    # Remove duplicates from timestamps and noise types
-                    unique_timestamps = sorted(list(set(issue_timestamps)))
-                    unique_noises = sorted(list(set(violations)))
+                            violations.append(noise_type)
                     
-                    # Clean look showing only the problem, the specific seconds, and the type
-                    timestamps_str = ", ".join(unique_timestamps)
-                    st.error(f"❌ **Problem Detected at ({timestamps_str}) -> Identified Issues:**")
-                    for noise in unique_noises:
-                        st.markdown(f"- **{noise}**")
-                else:
-                    st.success("✅ **Result:** Quality Audit Passed. Call environment complies with quiet-workspace standards.")
-            except Exception as e:
-                st.error(f"❌ Error during analysis: {str(e)}")
+                    if len(violations) > 0:
+                        unique_timestamps = sorted(list(set(issue_timestamps)))
+                        unique_noises = sorted(list(set(violations)))
+                        timestamps_str = ", ".join(unique_timestamps)
+                        
+                        st.error(f"❌ **Problem Detected at ({timestamps_str}) -> Identified Issues:**")
+                        for noise in unique_noises:
+                            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• **{noise}**")
+                    else:
+                        st.success("✅ **Result:** Quality Audit Passed. Call environment complies with quiet-workspace standards.")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error during analysis of this file: {str(e)}")
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+        st.balloons() # Dynamic celebration effect when all 100 calls are done!
 
 st.markdown("---")
-st.caption("Smart Audit Tool - Balanced Precision Edition.")
+st.caption("Smart Audit Tool - Bulk Precision Edition.")
