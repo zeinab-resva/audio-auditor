@@ -163,15 +163,23 @@ def analyze_audio(file_bytes: bytes, filename: str) -> dict:
     """
     Analyse a raw audio byte-string and return a result dictionary.
 
-    Targets ONLY:
-      - Distinct background chatter / people talking in the background
-      - Loud physical impacts: banging, door slams, thumps
+    Detection targets:
+      - Physical impacts: banging, door slams, loud thumps
+      - Background chatter: other people speaking in the environment
 
-    Aggressively filters out:
-      - Agent speech (normal and raised voice)
+    Suppressed (never flagged):
+      - Agent speech at any volume (normal or raised)
+      - Headset static / line hiss
       - Breathing / mic proximity pops
-      - Headset static / line hiss / white noise
-      - Transient mouth sounds (clicks, plosives)
+      - Isolated mouth transients (clicks, plosives)
+
+    Core technique: Harmonic-Percussive Source Separation (HPSS).
+      - Percussive component  →  captures physical impacts / transients
+      - Harmonic component    →  captures tonal signals (speech, music)
+    A "clean solo voice" has very low percussive energy and clean harmonics.
+    Background chatter has higher spectral complexity (multiple overlapping
+    voices = higher flatness) that distinguishes it from a single dominant
+    speaker even when both occupy the same frequency band.
 
     Returns
     -------
@@ -186,8 +194,8 @@ def analyze_audio(file_bytes: bytes, filename: str) -> dict:
         sr_target = 16_000
         y, sr     = librosa.load(audio_io, sr=sr_target, mono=True)
 
-        # ── 1. Per-second RMS (short frames averaged into 1-s bins) ────────────
-        frame_length = 512   # ~32 ms
+        # ── 1. Per-second RMS ────────────────────────────────────────────────
+        frame_length = 512   # ~32 ms at 16 kHz
         hop_length   = 256   # 50 % overlap
         rms_frames   = librosa.feature.rms(
             y=y, frame_length=frame_length, hop_length=hop_length
@@ -206,20 +214,23 @@ def analyze_audio(file_bytes: bytes, filename: str) -> dict:
         with np.errstate(invalid="ignore"):
             rms_per_sec = np.where(counts > 0, rms_per_sec / counts, 0.0)
 
-        # ── 2. Adaptive baseline — robust against loud-agent calls ─────────────
-        active       = rms_per_sec[rms_per_sec > 0]
-        median_rms   = float(np.median(active)) if len(active) else 0.0
-        mad          = float(np.median(np.abs(active - median_rms))) if len(active) else 0.0
+        # ── 2. Adaptive baseline ─────────────────────────────────────────────
+        active     = rms_per_sec[rms_per_sec > 0]
+        median_rms = float(np.median(active)) if len(active) else 0.0
+        mad        = float(np.median(np.abs(active - median_rms))) if len(active) else 0.0
 
-        # Spike must be well above baseline AND above an absolute floor.
-        # Using 3.5× MAD (was 2×) makes the gate significantly stricter.
-        spike_threshold = max(median_rms + 3.5 * mad, 0.045)
+        # Two tiers:
+        #   impact_threshold  – high bar required for physical-impact detection
+        #   chatter_threshold – lower bar to also catch sustained background voices
+        impact_threshold  = max(median_rms + 3.0 * mad, 0.040)
+        chatter_threshold = max(median_rms + 1.5 * mad, 0.020)
 
-        # ── 3. Candidate seconds ───────────────────────────────────────────────
+        # ── 3. Candidate seconds ─────────────────────────────────────────────
         violations = []
 
         for sec_idx, energy in enumerate(rms_per_sec):
-            if energy < spike_threshold:
+            # Skip truly silent / baseline-level seconds
+            if energy < chatter_threshold:
                 continue
 
             # Extract 1-second audio slice
@@ -229,61 +240,74 @@ def analyze_audio(file_bytes: bytes, filename: str) -> dict:
             if len(y_sec) < 512:
                 continue
 
-            # ── Spectral features ──────────────────────────────────────────
+            # ── Spectral features ────────────────────────────────────────────
             centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
             zcr      = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
             flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
-            rolloff  = float(np.mean(librosa.feature.spectral_rolloff(y=y_sec, sr=sr, roll_percent=0.85)))
 
-            # ── FILTER A: headset static / line hiss / white noise ─────────
-            # Broadband noise has high spectral flatness (energy spread evenly
-            # across all frequencies) and a high roll-off.
-            if flatness > 0.15:
+            # ── HPSS: separate transient from tonal energy ───────────────────
+            # Percussive component = impacts / transients
+            # Harmonic  component = speech / music (tonal)
+            y_harm, y_perc = librosa.effects.hpss(y_sec, margin=3.0)
+            perc_rms   = float(np.sqrt(np.mean(y_perc ** 2)))
+            harm_rms   = float(np.sqrt(np.mean(y_harm ** 2)))
+            perc_ratio = perc_rms / (perc_rms + harm_rms + 1e-9)
+
+            # ── FILTER A: headset static / line hiss ─────────────────────────
+            # Broadband noise has uniformly high spectral flatness.
+            if flatness > 0.18:
                 continue
 
-            # ── FILTER B: breathing / mic proximity pops ───────────────────
-            # Characterised by low centroid + very high ZCR (unvoiced bursts).
-            if zcr > 0.15 and centroid < 1_800:
+            # ── FILTER B: breathing / mic proximity pops ─────────────────────
+            # Unvoiced bursts: very high ZCR, low centroid.
+            if zcr > 0.18 and centroid < 2_000:
                 continue
 
-            # ── FILTER C: agent speech — normal AND raised voice ───────────
-            # Any second whose spectral fingerprint falls within the human
-            # voiced-speech band is suppressed unconditionally, no matter how
-            # loud the agent gets.  Volume spikes from the agent must never
-            # generate an alert — only genuine background noise should.
-            #
-            # Speech characteristics:
-            #   centroid 400–3200 Hz  (fundamental + lower harmonics)
-            #   ZCR      0.02–0.20    (periodic, voiced signal)
-            is_voiced_band = 400 < centroid < 3_200 and 0.02 < zcr < 0.20
-            if is_voiced_band:
+            # ── PATH 1: Physical impact (detected before the speech filter) ──
+            # Bangs and impacts are percussive-dominant.
+            # We check this FIRST so it can never be masked by Filter C.
+            if perc_ratio > 0.38 and energy >= impact_threshold:
+                mm = sec_idx // 60
+                ss = sec_idx % 60
+                violations.append({
+                    "timestamp": f"{mm:02d}:{ss:02d}",
+                    "noise":     "💥 Physical impact (bang / thud / door slam)",
+                })
                 continue
 
-            # ── FILTER D: single-frame mouth click / plosive transient ─────
-            # A genuine bang or chatter persists across neighbouring seconds;
-            # a plosive is usually isolated.  Require at least one neighbour
-            # second that also crosses a lower "sustain" threshold.
-            sustain_threshold = max(median_rms + 2.0 * mad, 0.025)
-            left_ok  = (sec_idx > 0              and rms_per_sec[sec_idx - 1] > sustain_threshold)
-            right_ok = (sec_idx < n_seconds - 1  and rms_per_sec[sec_idx + 1] > sustain_threshold)
+            # ── FILTER C: clean solo agent voice (any volume) ────────────────
+            # The agent speaking — even loudly — produces all three:
+            #   • structured harmonics  → low flatness  (< 0.10)
+            #   • almost no transients  → low perc_ratio (< 0.20)
+            #   • speech-band centroid and ZCR
+            # Background chatter fails because overlapping voices raise flatness
+            # above 0.10 and create spectral complexity a solo speaker does not.
+            is_speech_band = 400 < centroid < 3_500 and 0.02 < zcr < 0.22
+            is_clean_solo  = flatness < 0.10 and perc_ratio < 0.20
+            if is_speech_band and is_clean_solo:
+                continue
+
+            # ── FILTER D: isolated single-frame transient (mouth click) ──────
+            # Background noise persists; an isolated spike is usually a plosive.
+            sustain_thr = max(median_rms + 1.2 * mad, 0.018)
+            left_ok     = sec_idx > 0              and rms_per_sec[sec_idx - 1] > sustain_thr
+            right_ok    = sec_idx < n_seconds - 1  and rms_per_sec[sec_idx + 1] > sustain_thr
             if not (left_ok or right_ok):
-                # Allow isolated very-low-frequency impacts (physical bangs)
-                # through even if isolated — they rarely have neighbours.
-                if centroid >= 600:
+                # Low-frequency physical bangs are often isolated — allow them.
+                if centroid >= 500:
                     continue
 
-            # ── VERIFIED NOISE — classify ──────────────────────────────────
-            if centroid < 600:
+            # ── VERIFIED NOISE — classify and record ─────────────────────────
+            if centroid < 500:
                 noise_type = "💥 Low-frequency impact (bang / thud)"
-            elif centroid < 1_600 and zcr < 0.10:
+            elif centroid < 1_800 and zcr < 0.13:
                 noise_type = "🗣️ Background chatter / overlapping voices"
             else:
                 noise_type = "📢 Loud ambient disturbance (alarm / crash)"
 
-            mm        = sec_idx // 60
-            ss        = sec_idx % 60
-            timestamp = f"{mm:02d}:{ss:02d}"
-            violations.append({"timestamp": timestamp, "noise": noise_type})
+            mm = sec_idx // 60
+            ss = sec_idx % 60
+            violations.append({"timestamp": f"{mm:02d}:{ss:02d}", "noise": noise_type})
 
         return {
             "duration_sec": round(len(y) / sr_target, 1),
