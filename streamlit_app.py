@@ -105,17 +105,19 @@ st.markdown("""
         box-shadow: 0 8px 30px rgba(168, 85, 247, 0.8);
     }
 
-    /* ── Metric cards ── */
-    .metric-card {
-        background: rgba(15, 23, 42, 0.75);
-        border: 1px solid #334155;
-        border-radius: 14px;
-        padding: 18px 22px;
-        text-align: center;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    /* ── Timestamp pill ── */
+    .ts-pill {
+        display: inline-block;
+        background: rgba(99, 102, 241, 0.18);
+        border: 1px solid #6366f1;
+        color: #c4b5fd !important;
+        border-radius: 6px;
+        padding: 2px 10px;
+        font-size: 0.85rem;
+        font-family: 'Courier New', monospace;
+        margin: 3px 4px;
+        font-weight: 600;
     }
-    .metric-value { font-size: 2rem; font-weight: 700; color: #a78bfa !important; }
-    .metric-label { font-size: 0.85rem; color: #94a3b8 !important; margin-top: 4px; }
 
     /* ── Expander header ── */
     details summary {
@@ -156,115 +158,130 @@ def _file_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-def classify_noise_type(centroid: float, zcr: float, flatness: float) -> str:
-    """
-    Map spectral features to a human-readable noise category.
-
-    Categories (ordered by increasing centroid / randomness):
-    - Low-frequency thud/impact   – very low centroid
-    - Background chatter          – low-mid centroid, low ZCR (voiced)
-    - White noise / static hiss   – high flatness (energy spread evenly)
-    - Explicit ambient disturbance – everything else that passed the filters
-    """
-    if centroid < 500:
-        return "💥 Low-frequency impact (thud / banging)"
-    if flatness > 0.25:
-        return "📻 White noise / electrical static hiss"
-    if centroid < 1_400 and zcr < 0.08:
-        return "🗣️ Background chatter / overlapping speech"
-    return "📢 Loud ambient disturbance (door slam, alarm, etc.)"
-
-
 @st.cache_data(show_spinner=False)
 def analyze_audio(file_bytes: bytes, filename: str) -> dict:
     """
     Analyse a raw audio byte-string and return a result dictionary.
 
+    Targets ONLY:
+      - Distinct background chatter / people talking in the background
+      - Loud physical impacts: banging, door slams, thumps
+
+    Aggressively filters out:
+      - Agent speech (normal and raised voice)
+      - Breathing / mic proximity pops
+      - Headset static / line hiss / white noise
+      - Transient mouth sounds (clicks, plosives)
+
     Returns
     -------
     dict with keys:
-        duration_sec  – total audio duration in seconds
-        violations    – list of {"timestamp": str, "noise": str, "energy": float}
-        passed        – bool
-        error         – str | None
+        duration_sec – total audio length in seconds
+        violations   – list of {"timestamp": str, "noise": str}
+        passed       – bool
+        error        – str | None
     """
     try:
-        audio_io = io.BytesIO(file_bytes)
+        audio_io  = io.BytesIO(file_bytes)
         sr_target = 16_000
-        y, sr = librosa.load(audio_io, sr=sr_target, mono=True)
+        y, sr     = librosa.load(audio_io, sr=sr_target, mono=True)
 
-        # --- Per-second RMS using short frames, averaged into 1-s bins --------
-        frame_length = 512            # ~32 ms at 16 kHz — better resolution
-        hop_length   = 256            # 50 % overlap
+        # ── 1. Per-second RMS (short frames averaged into 1-s bins) ────────────
+        frame_length = 512   # ~32 ms
+        hop_length   = 256   # 50 % overlap
         rms_frames   = librosa.feature.rms(
             y=y, frame_length=frame_length, hop_length=hop_length
         )[0]
-
-        # Map frames → seconds
         times = librosa.frames_to_time(
             np.arange(len(rms_frames)), sr=sr, hop_length=hop_length
         )
-        n_seconds = int(np.ceil(times[-1])) if len(times) > 0 else 0
-
-        # Aggregate RMS per integer second
-        rms_per_sec = np.zeros(n_seconds + 1)
-        counts      = np.zeros(n_seconds + 1)
+        n_seconds   = int(np.ceil(times[-1])) + 1 if len(times) > 0 else 1
+        rms_per_sec = np.zeros(n_seconds)
+        counts      = np.zeros(n_seconds)
         for t, r in zip(times, rms_frames):
             s = int(t)
-            if s < len(rms_per_sec):
+            if s < n_seconds:
                 rms_per_sec[s] += r
                 counts[s]      += 1
         with np.errstate(invalid="ignore"):
             rms_per_sec = np.where(counts > 0, rms_per_sec / counts, 0.0)
 
-        # --- Baseline statistics (robust: use median + MAD) -------------------
-        median_rms = float(np.median(rms_per_sec[rms_per_sec > 0])) if np.any(rms_per_sec > 0) else 0.0
-        mad        = float(np.median(np.abs(rms_per_sec - median_rms)))
-        threshold  = max(median_rms + 2.0 * mad, 0.03)   # adaptive + hard floor
+        # ── 2. Adaptive baseline — robust against loud-agent calls ─────────────
+        active       = rms_per_sec[rms_per_sec > 0]
+        median_rms   = float(np.median(active)) if len(active) else 0.0
+        mad          = float(np.median(np.abs(active - median_rms))) if len(active) else 0.0
 
+        # Spike must be well above baseline AND above an absolute floor.
+        # Using 3.5× MAD (was 2×) makes the gate significantly stricter.
+        spike_threshold = max(median_rms + 3.5 * mad, 0.045)
+
+        # ── 3. Candidate seconds ───────────────────────────────────────────────
         violations = []
 
         for sec_idx, energy in enumerate(rms_per_sec):
-            if energy < threshold:
+            if energy < spike_threshold:
                 continue
 
-            # Slice exact 1-second segment
+            # Extract 1-second audio slice
             start = sec_idx * sr_target
             end   = start + sr_target
             y_sec = y[start:end]
             if len(y_sec) < 512:
                 continue
 
-            # Spectral features
+            # ── Spectral features ──────────────────────────────────────────
             centroid = float(np.mean(librosa.feature.spectral_centroid(y=y_sec, sr=sr)))
             zcr      = float(np.mean(librosa.feature.zero_crossing_rate(y=y_sec)))
             flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_sec)))
+            rolloff  = float(np.mean(librosa.feature.spectral_rolloff(y=y_sec, sr=sr, roll_percent=0.85)))
 
-            # ── FILTER 1: breathing / mic bump (high ZCR + high flatness) ──
-            if zcr > 0.18 and flatness > 0.10:
+            # ── FILTER A: headset static / line hiss / white noise ─────────
+            # Broadband noise has high spectral flatness (energy spread evenly
+            # across all frequencies) and a high roll-off.
+            if flatness > 0.15:
                 continue
 
-            # ── FILTER 2: normal agent speech (voiced, mid centroid) ──
-            # Only suppress if energy is not extreme (< 3σ above median)
-            is_speech_band   = 600 < centroid < 2_200 and 0.03 < zcr < 0.14
-            is_moderate_spike = energy < (median_rms + 3.5 * mad)
-            if is_speech_band and is_moderate_spike:
+            # ── FILTER B: breathing / mic proximity pops ───────────────────
+            # Characterised by low centroid + very high ZCR (unvoiced bursts).
+            if zcr > 0.15 and centroid < 1_800:
                 continue
 
-            # ── VERIFIED NOISE ──
-            mm = sec_idx // 60
-            ss = sec_idx % 60
-            timestamp  = f"{mm:02d}:{ss:02d}"
-            noise_type = classify_noise_type(centroid, zcr, flatness)
+            # ── FILTER C: agent speech — normal AND raised voice ───────────
+            # Human voiced speech occupies 300–3000 Hz centroid, moderate ZCR.
+            # We widen the suppression window substantially and only let through
+            # extreme outliers (≥ 5× MAD) even if they look like speech,
+            # because background voices have a different spectral signature
+            # (they are quieter and more diffuse, not the dominant source).
+            is_voiced_band  = 400 < centroid < 3_200 and 0.02 < zcr < 0.20
+            is_loud_enough  = energy >= (median_rms + 5.0 * mad)   # only truly extreme
+            if is_voiced_band and not is_loud_enough:
+                continue
 
-            violations.append({
-                "timestamp": timestamp,
-                "noise":     noise_type,
-                "energy":    round(float(energy), 5),
-                "centroid":  round(centroid, 1),
-                "zcr":       round(zcr, 4),
-                "flatness":  round(flatness, 4),
-            })
+            # ── FILTER D: single-frame mouth click / plosive transient ─────
+            # A genuine bang or chatter persists across neighbouring seconds;
+            # a plosive is usually isolated.  Require at least one neighbour
+            # second that also crosses a lower "sustain" threshold.
+            sustain_threshold = max(median_rms + 2.0 * mad, 0.025)
+            left_ok  = (sec_idx > 0              and rms_per_sec[sec_idx - 1] > sustain_threshold)
+            right_ok = (sec_idx < n_seconds - 1  and rms_per_sec[sec_idx + 1] > sustain_threshold)
+            if not (left_ok or right_ok):
+                # Allow isolated very-low-frequency impacts (physical bangs)
+                # through even if isolated — they rarely have neighbours.
+                if centroid >= 600:
+                    continue
+
+            # ── VERIFIED NOISE — classify ──────────────────────────────────
+            if centroid < 600:
+                noise_type = "💥 Low-frequency impact (bang / thud)"
+            elif centroid < 1_600 and zcr < 0.10:
+                noise_type = "🗣️ Background chatter / overlapping voices"
+            else:
+                noise_type = "📢 Loud ambient disturbance (alarm / crash)"
+
+            mm        = sec_idx // 60
+            ss        = sec_idx % 60
+            timestamp = f"{mm:02d}:{ss:02d}"
+            violations.append({"timestamp": timestamp, "noise": noise_type})
 
         return {
             "duration_sec": round(len(y) / sr_target, 1),
@@ -320,62 +337,33 @@ for idx, file in enumerate(uploaded_files):
 
     with st.expander(f"{status_icon}  {file.name}", expanded=not result["passed"]):
 
-        # ── Audio player (correct MIME type) ──────────────────────────────
+        # ── Audio player ───────────────────────────────────────────────────
         ext  = file.name.rsplit(".", 1)[-1].lower()
         mime = "audio/mpeg" if ext == "mp3" else "audio/wav"
         st.audio(io.BytesIO(file_bytes), format=mime)
 
         if result["error"]:
             st.error(f"❌ Analysis failed: {result['error']}")
+        elif result["violations"]:
+            # Group by noise type so we can label each timestamp cluster
+            from collections import defaultdict
+            by_type: dict = defaultdict(list)
+            for v in result["violations"]:
+                by_type[v["noise"]].append(v["timestamp"])
+
+            lines = []
+            for noise_type, timestamps in by_type.items():
+                ts_pills = " ".join(
+                    f"<span class='ts-pill'>{ts}</span>" for ts in timestamps
+                )
+                lines.append(f"**{noise_type}**<br>{ts_pills}")
+
+            st.error(
+                "**Noise detected at:**\n\n" + "\n\n".join(lines),
+                icon="🔊",
+            )
         else:
-            dur = result["duration_sec"]
-            n_v = len(result["violations"])
-
-            # ── Quick stats row ────────────────────────────────────────────
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(
-                    f"<div class='metric-card'>"
-                    f"<div class='metric-value'>{dur}s</div>"
-                    f"<div class='metric-label'>Duration</div></div>",
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                colour = "#f87171" if n_v > 0 else "#4ade80"
-                st.markdown(
-                    f"<div class='metric-card'>"
-                    f"<div class='metric-value' style='color:{colour} !important'>{n_v}</div>"
-                    f"<div class='metric-label'>Noise Events</div></div>",
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                verdict = "FAIL" if n_v > 0 else "PASS"
-                v_colour = "#f87171" if n_v > 0 else "#4ade80"
-                st.markdown(
-                    f"<div class='metric-card'>"
-                    f"<div class='metric-value' style='color:{v_colour} !important'>{verdict}</div>"
-                    f"<div class='metric-label'>Verdict</div></div>",
-                    unsafe_allow_html=True,
-                )
-
-            st.markdown("")   # spacer
-
-            if result["violations"]:
-                st.error("**Noise events detected:**")
-                import pandas as pd
-                vdf = pd.DataFrame(result["violations"])[
-                    ["timestamp", "noise", "energy", "centroid", "zcr", "flatness"]
-                ].rename(columns={
-                    "timestamp": "⏱ Timestamp",
-                    "noise":     "🔊 Noise Type",
-                    "energy":    "Energy (RMS)",
-                    "centroid":  "Centroid (Hz)",
-                    "zcr":       "ZCR",
-                    "flatness":  "Flatness",
-                })
-                st.dataframe(vdf, use_container_width=True, hide_index=True)
-            else:
-                st.success("✅ Quality Audit Passed — environment complies with quiet-workspace standards.")
+            st.success("✅ Quality Audit Passed — environment complies with quiet-workspace standards.")
 
     # ── Accumulate summary row ─────────────────────────────────────────────
     unique_types = list({v["noise"] for v in result["violations"]})
@@ -397,27 +385,21 @@ st.markdown("## 📊 Audit Summary")
 
 import pandas as pd
 summary_df = pd.DataFrame(summary_rows)
-total      = len(summary_df)
-passed     = int((summary_df["Verdict"] == "PASS").sum())
-failed     = int((summary_df["Verdict"] == "FAIL").sum())
+total  = len(summary_df)
+passed = int((summary_df["Verdict"] == "PASS").sum())
+failed = int((summary_df["Verdict"] == "FAIL").sum())
 
-m1, m2, m3, m4 = st.columns(4)
-for col, label, value, colour in [
-    (m1, "Total Files",    total,  "#a78bfa"),
-    (m2, "Passed ✅",       passed, "#4ade80"),
-    (m3, "Failed ❌",       failed, "#f87171"),
-    (m4, "Pass Rate",      f"{passed/total*100:.0f}%" if total else "—", "#38bdf8"),
-]:
-    with col:
-        st.markdown(
-            f"<div class='metric-card'>"
-            f"<div class='metric-value' style='color:{colour} !important'>{value}</div>"
-            f"<div class='metric-label'>{label}</div></div>",
-            unsafe_allow_html=True,
-        )
-
-st.markdown("")
-st.dataframe(summary_df, use_container_width=True, hide_index=True)
+st.markdown(
+    f"**{total}** file(s) audited — "
+    f"<span style='color:#4ade80'>**{passed} passed**</span> · "
+    f"<span style='color:#f87171'>**{failed} failed**</span>",
+    unsafe_allow_html=True,
+)
+st.dataframe(
+    summary_df[["File", "Noise Events", "Verdict"]],
+    use_container_width=True,
+    hide_index=True,
+)
 
 # ── CSV download ────────────────────────────────────────────────────────────
 csv_bytes = summary_df.to_csv(index=False).encode()
