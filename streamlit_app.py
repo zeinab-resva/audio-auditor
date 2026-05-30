@@ -247,14 +247,16 @@ def analyze_audio(file_bytes: bytes, filename: str) -> dict:
                 continue
 
             # ── FILTER C: agent speech — normal AND raised voice ───────────
-            # Human voiced speech occupies 300–3000 Hz centroid, moderate ZCR.
-            # We widen the suppression window substantially and only let through
-            # extreme outliers (≥ 5× MAD) even if they look like speech,
-            # because background voices have a different spectral signature
-            # (they are quieter and more diffuse, not the dominant source).
-            is_voiced_band  = 400 < centroid < 3_200 and 0.02 < zcr < 0.20
-            is_loud_enough  = energy >= (median_rms + 5.0 * mad)   # only truly extreme
-            if is_voiced_band and not is_loud_enough:
+            # Any second whose spectral fingerprint falls within the human
+            # voiced-speech band is suppressed unconditionally, no matter how
+            # loud the agent gets.  Volume spikes from the agent must never
+            # generate an alert — only genuine background noise should.
+            #
+            # Speech characteristics:
+            #   centroid 400–3200 Hz  (fundamental + lower harmonics)
+            #   ZCR      0.02–0.20    (periodic, voiced signal)
+            is_voiced_band = 400 < centroid < 3_200 and 0.02 < zcr < 0.20
+            if is_voiced_band:
                 continue
 
             # ── FILTER D: single-frame mouth click / plosive transient ─────
